@@ -1,0 +1,496 @@
+---
+title: "Lobster_TFN"
+author: "R. M. Grimwood"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Prep data
+```{r Prep Data, message=FALSE, warning=FALSE}
+
+# Library imports ################################################################################################################
+
+library(corrplot)
+library(ggord)
+library(ggplot2)
+library(ggpubr)
+library(gridExtra)
+library(reshape2)
+library(tidyverse)
+library(vegan)
+
+
+
+# Meta data ######################################################################################################################
+
+metadata = read.csv("Lobster_raw_abundance_full.csv", header = TRUE)
+metadata$Severity = factor(metadata$Severity, levels = c("Light", "Moderate", "High"))
+
+# Sort by severity
+sorted_metadata = metadata %>% arrange(Sample.type, Severity)
+
+# Library names
+library_names = c("Lob_1", "Lob_2","Lob_3","Lob_4","Lob_5","Lob_6","Lob_7","Lob_8","Lob_9","Lob_10","Lob_11","Lob_12","Lob_13","Lob_14","Lob_15")
+
+##################################################################################################################################
+
+```
+
+## Library depth
+```{r Library depths}
+
+# Library depth
+depth = metadata[,c(1,3:4,8)]
+
+# Order by severity
+depth$Severity = factor(depth$Severity, levels = c("Light", "Moderate", "High"))
+
+# Plot Blood and Uropod
+ggplot(depth, aes(x = factor(Lobster), y = Reads, fill = Sample.type)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  ggtitle("Library Read Depth") + 
+  facet_grid(Sample.type ~ ., scales = "free_x") + #facet_grid(Sample.type ~ .) + 
+  theme_bw() +  
+  xlab("Lobster") + 
+  ylab("Read Depth (million)") +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = c("Uropod" = "red3", "Blood" = "red4")) +
+  scale_x_discrete(limits = unique(depth$Lobster[order(depth$Severity)]))
+
+```
+
+## Crustavirus abundances
+```{r Crustavirus abundances}
+
+# Import virus data
+data = read.csv("Crustavirus_abun.csv", header = TRUE)
+hm_data = data
+hm_data = cbind(hm_data, "Severity" = metadata$Severity[1:15])
+rownames(hm_data) = data[,1]
+
+# Fromat and order by severity
+melted_data = hm_data %>%
+  pivot_longer(cols = c(Uropod, Blood), names_to = "Sample.type", values_to = "Virus") %>%
+  mutate(Severity = factor(Severity, levels = c("Light", "Moderate", "High"))) %>%
+  arrange(Severity, Lobster) %>%
+  mutate(Lobster = factor(Lobster, levels = unique(Lobster)))
+
+# Plot the heatmap
+ggplot(melted_data, aes(x = Lobster, y = Sample.type, fill = Virus)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "darkred") + 
+  labs(x = "Lobster", y = "Sample Type", fill = "Viral Abundance (RPM)") +
+  theme_bw() + 
+  geom_text(aes(label = round(Virus, 1)), size = 4, color = "black")
+
+# Logged graph
+melted_data$log_Virus <- log10(melted_data$Virus + 1)
+ggplot(melted_data, aes(x = Lobster, y = Sample.type, fill = log_Virus)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "darkred", name = "Log Viral Abundance (log RPM)") + 
+  labs(x = "Lobster", y = "Sample Type") +
+  theme_bw() + 
+  geom_text(aes(label = round(log_Virus, 2)), size = 4, color = "black")
+
+
+# Host RPS13 vs crustavirus - uropod
+rps13 = sweep(as.matrix(sorted_metadata$RPS13[16:30]), 1, sorted_metadata$Reads[16:30], "/")
+uropod = sweep(as.matrix(hm_data$Uropod), 1, sorted_metadata$Reads[16:30], "/")
+box_plot_data = cbind(uropod, rps13)
+box_plot_data[is.na(box_plot_data)] = 0
+box_plot_data = as.data.frame(box_plot_data)
+colnames(box_plot_data)[1] = "Crustavirus"
+colnames(box_plot_data)[2] = "RPS13"
+
+# Melt data
+melt_box_plot_data = melt(box_plot_data)
+
+ggplot(melt_box_plot_data, aes(x=variable, y=value, fill=variable)) + 
+  geom_boxplot(outlier.shape=NA) + 
+  ggtitle("Virus versus RPS13") + 
+  theme_bw() +
+  geom_jitter(width = 0.2, size = 1, alpha = 0.5) + 
+  coord_cartesian(ylim=c(0, 0.0004))
+
+
+# Correlation between abun and TFN severity
+crusta_data = cbind("Crusta" = data$Uropod, "Severity" = as.matrix(metadata$Severity[1:15]))
+crusta_data = data.frame(
+  "Crusta" = data$Uropod,
+  "Severity" = as.factor(metadata$Severity[1:15])
+)
+
+# Perform Kruskal-Wallis test
+kruskal_result = kruskal.test(Crusta ~ Severity, data = crusta_data)
+print(kruskal_result)
+
+library(ggpubr)
+ggplot(crusta_data, aes(x = Severity, y = Crusta, color = Severity)) + 
+  geom_boxplot(outlier.shape = NA) + 
+  geom_jitter(width = 0.2, size = 1, alpha = 0.5) +
+  labs(title = "Abundance vs Severity", x = "Severity", y = "Log10(crustavirus abundance)") + 
+  theme_bw() +
+  scale_y_log10() + 
+  scale_color_manual(values = c("High" = "#057A89", "Moderate" = "#01B19F", "Light" = "#CBDDB0"))
+
+```
+
+## Cellular microbes
+```{r Cellular microbes}
+
+# Filter bacteria by genus
+microbes = read.csv("ccmetagen_merged_genus_output.csv", header = TRUE)
+microbes_abun = aggregate(. ~ microbes$Genus, data = microbes[,1:30], FUN = sum)
+# Remove blank
+microbes_abun = microbes_abun[-1,]
+
+# Select rows where the count of TRUE values is at least 3
+num_samples_present = rowSums(microbes_abun[,2:31] > 0)
+microbes_abun = microbes_abun[num_samples_present >= 3, ] 
+
+# Prep for shannon
+alpha = microbes_abun
+rownames(alpha) = microbes_abun[,1]
+alpha = alpha[,-1]
+order = match(metadata$Sample.name, colnames(alpha))
+alpha = alpha[,order]
+
+```
+
+## Stacked barplot cellular microbes
+```{r Barplot microbes}
+
+# Match kingdoms with suspect bacteria
+kingdoms = match(rownames(alpha), microbes$Genus)
+piechart = cbind(microbes$Order[kingdoms], rownames(alpha))
+
+# Replace with orders
+microbe_orders = as.data.frame(cbind("Order" = piechart[-c(15,28),1], microbes_abun[-c(15,28),-1]))
+microbe_orders_ordered = microbe_orders[,sorted_metadata$Sample.name]
+microbe_orders_ordered = cbind("Order" = microbe_orders[,1], microbe_orders_ordered)
+microbe_orders = microbe_orders_ordered
+orders_melted = melt(microbe_orders)
+
+orders2 = orders_melted %>%
+  mutate(Sample.type = case_when(
+    str_ends(variable, "_B") ~ "Blood",
+    str_ends(variable, "_U") ~ "Uropod",
+    TRUE ~ NA_character_  # Handle other cases if needed
+  ))
+
+ggplot(orders_melted, aes(fill=Order, y=value, x=variable)) + 
+  geom_bar(position="stack", stat="identity") + theme_bw() +
+  scale_y_log10() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))
+
+# Plot blood and uropod separately
+uropod = orders2[orders2$Sample.type == "Uropod",]
+blood = orders2[orders2$Sample.type == "Blood",]
+
+# Uropod
+ggplot(uropod, aes(fill=Order, y=value, x=variable)) + 
+  geom_bar(position="stack", stat="identity") + theme_bw() +
+  scale_y_log10() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))
+
+ggplot(blood, aes(fill=Order, y=value, x=variable)) + 
+  geom_bar(position="stack", stat="identity") + theme_bw() +
+  scale_y_log10() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))
+
+```
+
+## Alpha diversity
+```{r Alpha diversity}
+
+# Shannon index
+shannon = alpha
+shannon = apply(shannon,2,diversity,index="shannon") 
+shannon = cbind(as.data.frame(shannon), "Severity" = metadata$Severity, "Type" = metadata$Sample.type)
+
+# Plot shannon 
+ggplot(shannon, aes(x = Severity, y = shannon)) +
+  geom_boxplot() +
+  facet_wrap(~Type, scales = "free_x", ncol = 1) +
+  labs(x = "TFN Severity", y = "Shannon Diversity") +
+  theme_bw() + geom_point(position = position_dodge(width = 0.75), aes(color = Severity))
+
+
+# Richness
+richness = alpha
+OneOrMorePresent = richness>0
+richness = apply(OneOrMorePresent,2,sum)
+richness = cbind(as.data.frame(richness), "Severity" = metadata$Severity, "Type" = metadata$Sample.type)
+
+ggplot(richness, aes(x = Severity, y = richness)) +
+  geom_boxplot() +
+  facet_wrap(~Type, scales = "free_x", ncol = 1) +
+  labs(x = "TFN Severity", y = "Genus Richness") +
+  theme_bw() + geom_point(position = position_dodge(width = 0.75), aes(color = Severity))
+
+
+# Shannon Anova
+shannon_anova = aov(shannon ~ Severity+Type, data = shannon)
+
+# Summarize ANOVA results
+summary(shannon_anova)
+
+# Richness Anova
+richness_anova = aov(richness ~ Severity+Type, data = richness)
+
+# Summarize ANOVA results
+summary(richness_anova)
+
+# Correlation of alpha diversity with severity
+# Import scores
+b_scores = read.csv("Lobster_scoring_bacteria.csv", header = TRUE)
+
+# Calculate correlation matrix
+cor_matrix = cor(b_scores[, c(4:8, 10:11)], method = "spearman", use = "complete.obs")
+
+# Display the correlation matrix
+print(cor_matrix)
+
+# Correlation matrix
+corrplot(cor_matrix, method = "circle")
+
+# Plotting linear regression
+data_long = b_scores %>%
+  pivot_longer(cols = c(4:8),
+               names_to = "Factor",
+               values_to = "Value")
+
+
+# Test for correlation of scoring with richness
+get_lm_summary = function(df) {
+  model = lm(Richness ~ Value, data = df)
+  summary_model = summary(model)
+  return(list(
+    p_value = summary_model$coefficients[2, 4],
+    r_squared = summary_model$r.squared
+  ))
+}
+
+
+# Regression
+regression_summaries = data_long %>%
+  group_by(Factor) %>%
+  summarize(
+    p_value = get_lm_summary(cur_data())$p_value,
+    r_squared = get_lm_summary(cur_data())$r_squared
+  )
+print(regression_summaries)
+
+
+# Spearman p-values
+spearman_summaries = data_long %>%
+  group_by(Factor) %>%
+  summarize(spearman_rho = cor.test(Richness, Value, method = "spearman")$estimate,
+            p_value = cor.test(Richness, Value, method = "spearman")$p.value)
+
+# Print the regression summaries
+print(spearman_summaries)
+
+# Scatter plots with regression line
+ggplot(data_long, aes(x = Value, y = Richness, color = End.category)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "darkred") +  # Adds regression line with confidence intervals
+  facet_wrap(~ Factor, scales = "free_x") +
+  labs(title = "Factors vs Bacterial (Genus-level) Richness",
+       x = "Value",
+       y = "Richness") +
+  scale_color_manual(values = c("High" = "darkred", "Moderate" = "orange", "Light" = "darkgreen")) +
+  theme_bw() +
+  facet_wrap(~Tissue.type + Factor, scales = "free_x", ncol = 5) +
+  geom_text(data = regression_summaries,
+            aes(x = Inf, y = Inf, label = paste0("R2 = ", round(r_squared, 3), ", p = ", round(p_value, 3))),
+            hjust = 1.1, vjust = 1.1, inherit.aes = FALSE) 
+
+
+
+
+# Test for correlation of scoring with Shannon
+get_lm_summary = function(df) {
+  model = lm(Shannon ~ Value, data = df)
+  summary_model = summary(model)
+  return(list(
+    p_value = summary_model$coefficients[2, 4],
+    r_squared = summary_model$r.squared
+  ))
+}
+
+
+# Regression
+regression_summaries = data_long %>%
+  group_by(Factor) %>%
+  summarize(
+    p_value = get_lm_summary(cur_data())$p_value,
+    r_squared = get_lm_summary(cur_data())$r_squared
+  )
+print(regression_summaries)
+
+
+# Spearman p-values
+spearman_summaries = data_long %>%
+  group_by(Factor) %>%
+  summarize(spearman_rho = cor.test(Shannon, Value, method = "spearman")$estimate,
+            p_value = cor.test(Shannon, Value, method = "spearman")$p.value)
+
+# Print the regression summaries
+print(spearman_summaries)
+
+# Scatter plots with regression line
+ggplot(data_long, aes(x = Value, y = Shannon, color = End.category)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "darkred") +  # Adds regression line with confidence intervals
+  facet_wrap(~ Factor, scales = "free_x") +
+  labs(title = "Factors vs Shannon Diversity",
+       x = "Value",
+       y = "Shannon index") +
+  scale_color_manual(values = c("High" = "darkred", "Moderate" = "orange", "Light" = "darkgreen")) +
+  theme_bw() +
+  facet_wrap(~Tissue.type + Factor, scales = "free_x", ncol = 5) +
+  geom_text(data = regression_summaries,
+            aes(x = Inf, y = Inf, label = paste0("R2 = ", round(r_squared, 3), ", p = ", round(p_value, 3))),
+            hjust = 1.1, vjust = 1.1, inherit.aes = FALSE) 
+
+
+```
+
+## Full non-viral microbes
+```{r Full non-viral microbes}
+
+# Normalise by bacteria
+hm_data = sweep(microbes_abun[,2:31],1,rowSums(microbes_abun[,2:31]),"/")
+rownames(hm_data) = microbes_abun[,1]
+hm_data = cbind(microbes_abun[,1], hm_data)
+
+# Heatmap
+abundance_matrix = t(hm_data[,-1])
+small_value = min(abundance_matrix[abundance_matrix != 0]) * 1e-6
+abundance_matrix = as.matrix(abundance_matrix)
+abundance_matrix[rowSums(abundance_matrix) == 0, ] = small_value
+
+order = match(sorted_metadata$Sample.name, rownames(abundance_matrix))
+abundance_matrix = abundance_matrix[order,]
+hm_data_melt = melt(abundance_matrix)
+
+# Plot using ggplot
+ggplot(hm_data_melt, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "#009BE8") + 
+  labs(x = "Sample", y = "", fill = "Bacterial Abundance") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
+
+## Non-viral NMDS
+```{r Bacteria NMDS}
+
+set.seed(49) # See for reproducibility
+
+# Set up NMDS
+norm_nmds = microbes_abun[,2:31] #no normalisation
+rownames(norm_nmds) = microbes_abun[,1]
+norm_nmds = t(norm_nmds)
+# Reorder
+order = match(metadata$Sample.name, rownames(norm_nmds))
+norm_nmds = norm_nmds[order,]
+rowSums(norm_nmds)
+norm_nmds = norm_nmds[-c(19,30),] # Remove NAs
+
+# Attach metadata
+norm_nmds = cbind(norm_nmds, metadata[-c(19,30),])
+
+# Set up distance matrix - Bray-Crutis distance
+vdist = vegdist(norm_nmds[,1:30], "bray")
+
+# Preform NMDS
+nmds = metaMDS(vdist, distance = "bray", trymax = 250, k = 3)
+stressplot(nmds)
+plot(nmds, type='t', display=c('site', 'species'))
+
+# Extract NMDS with ggplot
+nmds_points = as.data.frame(nmds$points)
+nmds_points = cbind(norm_nmds, nmds_points)
+
+# Severity
+adonis2(formula = vdist~Sample.type+Severity, data = nmds_points, method = "bray")
+ggplot(nmds_points, aes(x=MDS1, y=MDS2, color=Severity, shape=Sample.type)) + geom_point(size = 3) + theme_bw() + scale_color_manual(values = c("High" = "#057A89", "Moderate" = "#01B19F", "Light" = "#CBDDB0"))
+
+```
+
+# Scoring
+```{r Scoring}
+
+# Import scores
+scores = read.csv("Lobster_scoring.csv", header = TRUE)
+
+# Calculate correlation matrix
+cor_matrix = cor(scores[, 4:9], method = "spearman", use = "complete.obs")
+
+# Display the correlation matrix
+print(cor_matrix)
+
+# Correlation matrix
+corrplot(cor_matrix, method = "circle")
+
+# Plotting linear regression
+data_long = scores %>%
+  pivot_longer(cols = c(4:8),
+               names_to = "Factor",
+               values_to = "Value")
+
+
+get_lm_summary = function(df) {
+  model = lm(Crustavirus.abundance ~ Value, data = df)
+  summary_model = summary(model)
+  return(list(
+    p_value = summary_model$coefficients[2, 4],
+    r_squared = summary_model$r.squared
+  ))
+}
+
+
+# Regression
+regression_summaries = data_long %>%
+  group_by(Factor) %>%
+  summarize(
+    p_value = get_lm_summary(cur_data())$p_value,
+    r_squared = get_lm_summary(cur_data())$r_squared
+  )
+print(regression_summaries)
+
+
+# Spearman p-values
+spearman_summaries = data_long %>%
+  group_by(Factor) %>%
+  summarize(spearman_rho = cor.test(Crustavirus.abundance, Value, method = "spearman")$estimate,
+            p_value = cor.test(Crustavirus.abundance, Value, method = "spearman")$p.value)
+
+# Print the regression summaries
+print(spearman_summaries)
+
+# Scatter plots with regression line
+ggplot(data_long, aes(x = Value, y = Crustavirus.abundance, color = End.category)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "darkred") +  # Adds regression line with confidence intervals
+  facet_wrap(~ Factor, scales = "free_x") +
+  labs(title = "Factors vs Crustavirus Abundance",
+       x = "Value",
+       y = "Crustavirus Abundance") +
+  scale_color_manual(values = c("High" = "darkred", "Moderate" = "orange", "Light" = "darkgreen")) +
+  theme_bw() +
+  geom_text(data = regression_summaries,
+            aes(x = Inf, y = Inf, label = paste0("R2 = ", round(r_squared, 3), ", p = ", round(p_value, 3))),
+            hjust = 1.1, vjust = 1.1, inherit.aes = FALSE) 
+
+
+```
